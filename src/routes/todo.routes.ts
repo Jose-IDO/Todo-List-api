@@ -1,10 +1,11 @@
 /**
- * Todo routes (CRUD)
+ * Todo routes (CRUD + bulk upload)
  *
  * Thought process:
- * - All todo routes should be protected: only authenticated users can access them.
- * - Each user can ONLY see and modify their own todos.
- * - We use Prisma to query the Todo model and always filter by userId.
+ * - All todo routes are protected by authMiddleware (per-user isolation).
+ * - Each user can only see and modify their own todos.
+ * - PATCH is used for partial updates to a todo.
+ * - Bulk upload allows users to upload multiple todos at once via JSON or CSV.
  */
 
 import { Router, Response } from "express";
@@ -13,6 +14,8 @@ import {
   authMiddleware,
   AuthenticatedRequest,
 } from "../middleware/authMiddleware";
+import multer from "multer";
+import { parse } from "csv-parse/sync";
 
 const router = Router();
 
@@ -21,6 +24,184 @@ const router = Router();
  * That means every /todos endpoint requires a valid JWT.
  */
 router.use(authMiddleware);
+
+/**
+ * Configure multer to store uploaded files in memory.
+ *
+ * Thought process:
+ * - We don't need to save files to disk for this challenge.
+ * - We only need the file contents to parse JSON/CSV and insert into the DB.
+ */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5 MB max file size (just a safety limit)
+  },
+});
+
+/**
+ * Helper type for raw todo input from JSON or CSV.
+ */
+type RawTodoInput = {
+  title?: string;
+  description?: string;
+  status?: string;
+};
+
+/**
+ * Normalize JSON input into an array of RawTodoInput.
+ *
+ * Supported JSON formats:
+ * 1) An array of todos:
+ *    [
+ *      { "title": "...", "description": "...", "status": "PENDING" },
+ *      { "title": "...", "description": "..." }
+ *    ]
+ *
+ * 2) An object with a "todos" array:
+ *    {
+ *      "todos": [
+ *        { "title": "...", "description": "..." }
+ *      ]
+ *    }
+ */
+function normalizeJsonTodos(jsonData: unknown): RawTodoInput[] {
+  if (Array.isArray(jsonData)) {
+    return jsonData as RawTodoInput[];
+  }
+
+  if (
+    typeof jsonData === "object" &&
+    jsonData !== null &&
+    Array.isArray((jsonData as any).todos)
+  ) {
+    return (jsonData as any).todos as RawTodoInput[];
+  }
+
+  return [];
+}
+
+/**
+ * Parse CSV buffer into an array of RawTodoInput.
+ *
+ * Expected CSV headers: title,description,status
+ *
+ * Example:
+ * title,description,status
+ * "Finish LuckyBeard task","Work on bulk upload feature","PENDING"
+ * "Study Prisma","Prepare for interview","DONE"
+ */
+function parseCsvTodos(buffer: Buffer): RawTodoInput[] {
+  const content = buffer.toString("utf-8");
+
+  const records = parse(content, {
+    columns: true, // Use the first row as column names
+    skip_empty_lines: true,
+    trim: true,
+  }) as RawTodoInput[];
+
+  return records;
+}
+
+/**
+ * POST /api/v1/todos/upload
+ *
+ * Bulk upload todos from a JSON or CSV file.
+ *
+ * - Uses multer to handle the file upload (field name: "file").
+ * - Detects format based on file extension (.json or .csv).
+ * - Validates each row (requires title and description).
+ * - Inserts valid todos using Prisma createMany.
+ * - All todos are created for the authenticated user (per-user isolation).
+ */
+router.post(
+  "/upload",
+  upload.single("file"),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: "Not authenticated" });
+      }
+
+      // Multer puts the uploaded file on req.file
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const userId = req.user.userId;
+      const originalName = req.file.originalname.toLowerCase();
+      const buffer = req.file.buffer;
+
+      let rawTodos: RawTodoInput[] = [];
+
+      if (originalName.endsWith(".json")) {
+        // Handle JSON file
+        try {
+          const parsed = JSON.parse(buffer.toString("utf-8"));
+          rawTodos = normalizeJsonTodos(parsed);
+        } catch (err) {
+          return res.status(400).json({ message: "Invalid JSON file" });
+        }
+      } else if (originalName.endsWith(".csv")) {
+        // Handle CSV file
+        try {
+          rawTodos = parseCsvTodos(buffer);
+        } catch (err) {
+          console.error("Error parsing CSV:", err);
+          return res.status(400).json({ message: "Invalid CSV file" });
+        }
+      } else {
+        return res
+          .status(400)
+          .json({ message: "Unsupported file type. Use .json or .csv" });
+      }
+
+      if (rawTodos.length === 0) {
+        return res.status(400).json({ message: "No todos found in file" });
+      }
+
+      // Filter and map to valid todos
+      const validTodos = rawTodos
+        .filter((t) => t.title && t.description) // require title + description
+        .map((t) => ({
+          title: t.title as string,
+          description: t.description as string,
+          status: t.status || "PENDING",
+          userId,
+        }));
+
+      const total = rawTodos.length;
+      const toInsert = validTodos.length;
+      const skipped = total - toInsert;
+
+      if (toInsert === 0) {
+        return res.status(400).json({
+          message:
+            "No valid todos to insert. Make sure each row has a title and description.",
+          totalRows: total,
+          inserted: 0,
+          skipped,
+        });
+      }
+
+      // Insert all valid todos at once
+      const result = await prisma.todo.createMany({
+        data: validTodos,
+      });
+
+      return res.status(201).json({
+        message: "Bulk upload completed",
+        totalRows: total,
+        attemptedInsert: toInsert,
+        inserted: result.count,
+        skipped,
+      });
+    } catch (error) {
+      console.error("Error in bulk upload:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  }
+);
 
 /**
  * POST /api/v1/todos
@@ -33,7 +214,6 @@ router.post("/", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { title, description, status } = req.body;
 
-    // req.user is set by authMiddleware
     if (!req.user) {
       return res.status(401).json({ message: "Not authenticated" });
     }
@@ -128,13 +308,13 @@ router.get("/:id", async (req: AuthenticatedRequest, res: Response) => {
 });
 
 /**
- * PUT /api/v1/todos/:id
+ * PATCH /api/v1/todos/:id
  *
- * Update a todo (title, description, status) for the authenticated user.
+ * Partially update a todo (title, description, status) for the authenticated user.
  *
  * Body can include any of: { title?: string, description?: string, status?: string }
  */
-router.put("/:id", async (req: AuthenticatedRequest, res: Response) => {
+router.patch("/:id", async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.user) {
       return res.status(401).json({ message: "Not authenticated" });
@@ -182,7 +362,6 @@ router.put("/:id", async (req: AuthenticatedRequest, res: Response) => {
  * DELETE /api/v1/todos/:id
  *
  * Delete a todo for the authenticated user.
- * For now this performs a hard delete.
  */
 router.delete("/:id", async (req: AuthenticatedRequest, res: Response) => {
   try {

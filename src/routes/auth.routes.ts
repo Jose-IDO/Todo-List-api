@@ -55,7 +55,7 @@ router.post("/register", async (req: Request, res: Response) => {
     });
 
     if (existingUser) {
-      return res.status(409).json({ message: "Email is already in use" });
+      return res.status(400).json({ message: "Email is already in use" });
     }
 
     // 3. Hash the password

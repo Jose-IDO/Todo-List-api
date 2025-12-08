@@ -19,6 +19,10 @@ dotenv.config();
 import authRouter from "./routes/auth.routes";
 import todoRouter from "./routes/todo.routes";
 import userRouter from "./routes/user.routes";
+import aiRoutes from "./routes/ai.routes";
+
+
+
 
 const app: Application = express();
 
@@ -40,6 +44,7 @@ app.get("/api/v1/health", (req: Request, res: Response) => {
 app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/todos", todoRouter);
 app.use("/api/v1/users", userRouter);
+app.use("/api/v1/ai", aiRoutes);
 
 // Server port
 const PORT = process.env.PORT || 3000;

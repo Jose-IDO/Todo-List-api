@@ -4,7 +4,7 @@
  * Thought process:
  * - Keep user-account related endpoints separate from auth and todos.
  * - This file currently focuses on the "delete my account" feature.
- * - im implementing soft delete by setting isDeleted = true.
+ * - I'm implementing soft delete by setting isDeleted = true.
  */
 
 import { Router, Response } from "express";
@@ -30,7 +30,7 @@ router.use(authMiddleware);
  * Flow:
  * 1. Ensure user is authenticated (authMiddleware).
  * 2. Mark the user as isDeleted = true.
- * 3. Optionally, we could act on their todos (e.g. mark them as cancelled),
+ * 3. Optionally, we could also mark this user's todos as unavailable.
  * 4. Return a success message.
  */
 router.delete("/me", async (req: AuthenticatedRequest, res: Response) => {
@@ -43,7 +43,7 @@ router.delete("/me", async (req: AuthenticatedRequest, res: Response) => {
 
     const userId = req.user.userId;
 
-    // Update the user to set isDeleted = true
+    // 1) Soft delete the user by setting isDeleted = true
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
@@ -51,6 +51,34 @@ router.delete("/me", async (req: AuthenticatedRequest, res: Response) => {
       },
     });
 
+    /**
+     * 2) OPTIONAL: Update this user's todos to reflect that they are now unavailable.
+     *
+     * Thought process:
+     * - When a user deletes their account, one possible business rule is that
+     *   their todos should no longer be treated as active work items.
+     * - A simple way to represent this in the data is to set their status to
+     *   something like "UNAVAILABLE".
+     *
+     * Using updateMany:
+     * - updateMany works well when we want to set the same value for all matching rows.
+     * - In this example, we'd be saying:
+     *   "All todos for this user are now unavailable."
+     *
+     * If the business later wanted more detailed messaging like:
+     *   "Todo number (id) for user (userId) is unavailable",
+     *   we could loop over the todos individually and update the description per row.
+     *
+     * For now, this is left commented out as an example of how the system
+     * could evolve, without changing behaviour for the current brief.
+     */
+
+    // await prisma.todo.updateMany({
+    //   where: { userId },
+    //   data: {
+    //     status: "UNAVAILABLE", // meaning: todos for this user are no longer active
+    //   },
+    // });
 
     return res.status(200).json({
       message: "Account deleted (soft delete) successfully",
