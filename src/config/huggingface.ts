@@ -7,8 +7,9 @@ if (!HF_API_KEY) {
 }
 
 export const hf = axios.create({
-  baseURL: "https://api-inference.huggingface.co/models",
+  baseURL: "https://router.huggingface.co",
   headers: {
     Authorization: `Bearer ${HF_API_KEY}`,
   },
 });
+
