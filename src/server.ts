@@ -2,76 +2,51 @@
  * Main server entry point.
  *
  * Thought process:
- * - Keep this file focused on app setup and wiring, not business logic.
+ * - Keep this file focused on app setup and routing.
+ * - No business logic should live here.
+ * - Routes are organized by domain: auth, todos, users.
+ * - Middleware like CORS and JSON parser come first.
  */
 
 import express, { Application, Request, Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import prisma from "./config/prisma";
-import authRouter from "./routes/auth.routes";
-import { authMiddleware, AuthenticatedRequest } from "./middleware/authMiddleware";
-import todoRouter from "./routes/todo.routes";
 
-
-
-
-
+// Load environment variables
 dotenv.config();
+
+// Import route modules
+import authRouter from "./routes/auth.routes";
+import todoRouter from "./routes/todo.routes";
+import userRouter from "./routes/user.routes";
 
 const app: Application = express();
 
+// Middleware
 app.use(cors());
-app.use(express.json());
-app.use("/api/v1/todos", todoRouter);
+app.use(express.json()); // Allows Express to parse JSON bodies
 
-
-// Register auth routes under /api/v1/auth
-app.use("/api/v1/auth", authRouter);
-
-app.use("/api/v1/todos", todoRouter);
-
-
+/**
+ * Health check endpoint si i can verify that the server is running.
+ */
 app.get("/api/v1/health", (req: Request, res: Response) => {
   res.json({ status: "ok", message: "API is running" });
 });
 
-app.get("/api/v1/me", authMiddleware, (req: AuthenticatedRequest, res: Response) => {
-  // req.user is set by the authMiddleware
-  if (!req.user) {
-    // This should not happen if middleware works, but it's a safety check
-    return res.status(500).json({ message: "User info missing on request" });
-  }
+/**
+ * Main routes
+ * Each domain (auth, todos, users) is separated into its own router file.
+ */
+app.use("/api/v1/auth", authRouter);
+app.use("/api/v1/todos", todoRouter);
+app.use("/api/v1/users", userRouter);
 
-  return res.json({
-    message: "Authenticated user info",
-    user: req.user,
-  });
-});
-
-
-app.get("/api/v1/db-check", async (req: Request, res: Response) => {
-  try {
-    // Simple query: how many users exist, helps me confirm the db api communication is working well. verifies prisma config and migrations are wired correctly
-    const userCount = await prisma.user.count();
-
-    res.json({
-      ok: true,
-      message: "Database connection successful",
-      userCount,
-    });
-  } catch (error) {
-    console.error("DB check failed:", error);
-    res.status(500).json({
-      ok: false,
-      message: "Database connection failed",
-    });
-  }
-});
-
-
+// Server port
 const PORT = process.env.PORT || 3000;
 
+/**
+ * Start server
+ */
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
